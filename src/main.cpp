@@ -75,8 +75,13 @@ void setup() {
   // Initialize sensor
   sensors.begin();
 
-  // Check double reset for entering config mode
-  if (drd->detectDoubleReset()) {
+  // Check reset reason
+  String resetReason = ESP.getResetReason();
+  Serial.print("Reset reason: ");
+  Serial.println(resetReason);
+
+  // Only enter config mode on double reset if NOT waking from deep sleep
+  if (!resetReason.equals("Deep-Sleep Wake") && drd->detectDoubleReset()) {
     Serial.println("** Double Reset Detected - Entering Config Mode **");
     startConfigPortal();
   } else {
