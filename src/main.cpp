@@ -3,6 +3,7 @@
   - DS18B20 temperature sensor
   - Battery voltage measurement via voltage divider on A0
   - MQTT publish of JSON payload
+  - Home Assistant MQTT discovery
   - Deep sleep with adjustable interval
   - WiFi + MQTT configuration via WiFiManager
   - Enter Config Mode on double reset using ESP_DoubleResetDetector
@@ -13,37 +14,39 @@
 */
 
 #include <ESP8266WiFi.h>
-#include <WiFiManager.h>              // https://github.com/tzapu/WiFiManager
-#include <PubSubClient.h>            // https://github.com/knolleary/pubsubclient
-#include <OneWire.h>                 // https://github.com/PaulStoffregen/OneWire
-#include <DallasTemperature.h>       // https://github.com/milesburton/DallasTemperature
+#include <WiFiManager.h>
+#include <PubSubClient.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include <EEPROM.h>
-#include <ESP_DoubleResetDetector.h> // khoih-prog/ESP_DoubleResetDetector
-#include <Ticker.h>                  // for LED blink
+#include <ESP_DoubleResetDetector.h>
+#include <Ticker.h>
 
 // Pin definitions
-#define ONE_WIRE_BUS   D2    // DS18B20 data
-#define LED_PIN        LED_BUILTIN  // onboard LED (D4/GPIO2)
+#define ONE_WIRE_BUS   D2
+#define LED_PIN        LED_BUILTIN
 
 // EEPROM layout
 #define EEPROM_SIZE    512
-#define INTERVAL_ADDR  0     // 1 byte
-#define SERVER_ADDR    1     // length: 40 bytes
+#define INTERVAL_ADDR  0
+#define SERVER_ADDR    1
 #define SERVER_SIZE    40
-#define PORT_ADDR      (SERVER_ADDR + SERVER_SIZE) // length: 6 bytes
+#define PORT_ADDR      (SERVER_ADDR + SERVER_SIZE)
 #define PORT_SIZE      6
-#define USER_ADDR      (PORT_ADDR + PORT_SIZE)    // length: 32 bytes
+#define USER_ADDR      (PORT_ADDR + PORT_SIZE)
 #define USER_SIZE      32
-#define PASS_ADDR      (USER_ADDR + USER_SIZE)    // length: 32 bytes
+#define PASS_ADDR      (USER_ADDR + USER_SIZE)
 #define PASS_SIZE      32
 
 // MQTT topics
-const char* TOPIC_TEMP     = "bazen/teplota";
-const char* TOPIC_INTERVAL = "bazen/interval/set";
+const char* TOPIC_TEMP        = "bazen/teplota";
+const char* TOPIC_INTERVAL    = "bazen/interval/set";
+const char* DISCOVERY_TOPIC_TEMP = "homeassistant/sensor/pool_sensor_temperature/config";
+const char* DISCOVERY_TOPIC_VOLT = "homeassistant/sensor/pool_sensor_voltage/config";
 
-// DRD
-#define DRD_TIMEOUT    10    // seconds
-#define DRD_ADDRESS    0     // EEPROM address for DRD flag
+// Double Reset Detector
+#define DRD_TIMEOUT    10
+#define DRD_ADDRESS    0
 
 // Forward declarations
 void startConfigPortal();
@@ -51,6 +54,7 @@ void loadSettings();
 void saveSettings();
 void connectWiFiAndMQTT();
 void checkForMQTTCommands(unsigned long timeoutMs);
+void publishDiscovery();
 void sendData();
 void goToSleep();
 void mqttCallback(char* topic, byte* payload, unsigned int length);
@@ -65,13 +69,12 @@ WiFiManager wm;
 DoubleResetDetector* drd;
 Ticker blinkTicker;
 
-int intervalMinutes = 15;  // default
+int intervalMinutes = 15;
 char mqtt_server[SERVER_SIZE] = "mqtt.server.local";
 char mqtt_port[PORT_SIZE]    = "1883";
 char mqtt_user[USER_SIZE]    = "";
 char mqtt_pass[PASS_SIZE]    = "";
 
-// Read battery voltage via voltage divider 1:1 on A0
 float readBatteryVoltage() {
   uint16_t raw = analogRead(A0);
   float v = raw * (3.3f / 1023.0f);
@@ -85,19 +88,19 @@ void setup() {
   drd = new DoubleResetDetector(DRD_TIMEOUT, DRD_ADDRESS);
   sensors.begin();
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH); // LED off (active LOW)
+  digitalWrite(LED_PIN, HIGH);
 
   String reason = ESP.getResetReason();
   Serial.printf("Reset reason: %s\n", reason.c_str());
 
-  // Enter Config Mode on double reset (not on wake)
   if (!reason.equals("Deep-Sleep Wake") && drd->detectDoubleReset()) {
     Serial.println("** Entering Config Mode **");
     startConfigPortal();
   } else {
     loadSettings();
     connectWiFiAndMQTT();
-    checkForMQTTCommands(2000);  // allow MQTT interval update
+    publishDiscovery();
+    checkForMQTTCommands(2000);
     sendData();
     goToSleep();
   }
@@ -107,16 +110,13 @@ void loop() {
   drd->loop();
 }
 
-// Toggle LED state
 void blinkLED() {
   digitalWrite(LED_PIN, !digitalRead(LED_PIN));
 }
 
 void startConfigPortal() {
-  // LED blink at 0.5s interval
   blinkTicker.attach(0.5, blinkLED);
 
-  // Custom parameters
   WiFiManagerParameter p_mqtt("mqtt",   "MQTT Server",   mqtt_server, SERVER_SIZE);
   WiFiManagerParameter p_port("port",   "MQTT Port",     mqtt_port,   PORT_SIZE);
   WiFiManagerParameter p_user("user",   "MQTT User",     mqtt_user,   USER_SIZE);
@@ -128,18 +128,14 @@ void startConfigPortal() {
   wm.addParameter(&p_user);
   wm.addParameter(&p_pass);
   wm.addParameter(&p_int);
-
   wm.setConfigPortalTimeout(180);
   if (!wm.startConfigPortal("PoolSensorAP")) {
-    Serial.println("Config portal timeout");
     ESP.restart();
   }
 
-  // Stop LED blinking
   blinkTicker.detach();
-  digitalWrite(LED_PIN, HIGH); // LED off
+  digitalWrite(LED_PIN, HIGH);
 
-  // Read configured values
   strncpy(mqtt_server, p_mqtt.getValue(), SERVER_SIZE);
   strncpy(mqtt_port,   p_port.getValue(),   PORT_SIZE);
   strncpy(mqtt_user,   p_user.getValue(),   USER_SIZE);
@@ -150,7 +146,6 @@ void startConfigPortal() {
   ESP.restart();
 }
 
-// Save settings to EEPROM
 void saveSettings() {
   EEPROM.write(INTERVAL_ADDR, intervalMinutes);
   for (int i = 0; i < SERVER_SIZE; i++) EEPROM.write(SERVER_ADDR + i, mqtt_server[i]);
@@ -160,7 +155,6 @@ void saveSettings() {
   EEPROM.commit();
 }
 
-// Load settings from EEPROM
 void loadSettings() {
   intervalMinutes = EEPROM.read(INTERVAL_ADDR);
   if (intervalMinutes < 1 || intervalMinutes > 1440) intervalMinutes = 15;
@@ -174,11 +168,10 @@ void loadSettings() {
   mqtt_pass[PASS_SIZE-1]   = '\0';
 }
 
-// Connect to WiFi or fallback to config portal
 void connectWiFiAndMQTT() {
   WiFi.mode(WIFI_STA);
   Serial.print("Connecting to WiFi");
-  WiFi.begin();  
+  WiFi.begin();
   unsigned long start = millis();
   while (millis() - start < 20000) {
     if (WiFi.status() == WL_CONNECTED) break;
@@ -192,6 +185,7 @@ void connectWiFiAndMQTT() {
   Serial.printf("\nWiFi IP: %s\n", WiFi.localIP().toString().c_str());
 
   mqttClient.setServer(mqtt_server, atoi(mqtt_port));
+  mqttClient.setBufferSize(512);
   mqttClient.setCallback(mqttCallback);
   while (!mqttClient.connected()) {
     Serial.print("Connecting MQTT...");
@@ -206,7 +200,32 @@ void connectWiFiAndMQTT() {
   Serial.printf("Subscribed to %s\n", TOPIC_INTERVAL);
 }
 
-// Allow processing incoming MQTT for given period
+void publishDiscovery() {
+  char configMsg[512];
+  // Temperature sensor discovery
+  snprintf(configMsg, sizeof(configMsg),
+    "{\"name\":\"Bazén Teplota\","
+    "\"state_topic\":\"%s\","
+    "\"unit_of_measurement\":\"°C\","
+    "\"value_template\":\"{{ value_json.temperature }}\","
+    "\"unique_id\":\"pool_sensor_temperature\","
+    "\"device\":{\"identifiers\":[\"pool_sensor\"],\"name\":\"Pool Sensor\",\"model\":\"Wemos D1 v4\",\"manufacturer\":\"DIY\"}"
+    "}", TOPIC_TEMP);
+  mqttClient.publish(DISCOVERY_TOPIC_TEMP, configMsg, true);
+
+  // Voltage sensor discovery
+  snprintf(configMsg, sizeof(configMsg),
+    "{\"name\":\"Bazén Napätie\","
+    "\"state_topic\":\"%s\","
+    "\"unit_of_measurement\":\"V\","
+    "\"device_class\":\"voltage\","
+    "\"value_template\":\"{{ value_json.voltage }}\","
+    "\"unique_id\":\"pool_sensor_voltage\","
+    "\"device\":{\"identifiers\":[\"pool_sensor\"],\"name\":\"Pool Sensor\",\"model\":\"Wemos D1 v4\",\"manufacturer\":\"DIY\"}"
+    "}", TOPIC_TEMP);
+  mqttClient.publish(DISCOVERY_TOPIC_VOLT, configMsg, true);
+}
+
 void checkForMQTTCommands(unsigned long timeoutMs) {
   unsigned long start = millis();
   while (millis() - start < timeoutMs) {
@@ -215,36 +234,29 @@ void checkForMQTTCommands(unsigned long timeoutMs) {
   }
 }
 
-// MQTT callback to update interval
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   payload[length] = '\0';
   String msg = String((char*)payload);
-  Serial.printf("MQTT message [%s]: %s\n", topic, msg.c_str());
   if (String(topic) == TOPIC_INTERVAL) {
     int newInterval = msg.toInt();
     if (newInterval >= 1 && newInterval <= 1440) {
       intervalMinutes = newInterval;
       saveSettings();
       Serial.printf("Interval updated to %d minutes via MQTT\n", intervalMinutes);
-    } else {
-      Serial.println("Invalid interval value");
     }
   }
 }
 
-// Publish sensor data then disconnect
 void sendData() {
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
   float vbat  = readBatteryVoltage();
   char payload[100];
   snprintf(payload, sizeof(payload), "{\"temperature\": %.2f, \"voltage\": %.2f}", tempC, vbat);
-  Serial.printf("Publishing: %s\n", payload);
   mqttClient.publish(TOPIC_TEMP, payload);
   mqttClient.disconnect();
 }
 
-// Go to deep sleep for the configured interval
 void goToSleep() {
   Serial.printf("Sleeping for %d min...\n", intervalMinutes);
   Serial.flush();
