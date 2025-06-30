@@ -185,7 +185,6 @@ void connectWiFiAndMQTT() {
   Serial.printf("\nWiFi IP: %s\n", WiFi.localIP().toString().c_str());
 
   mqttClient.setServer(mqtt_server, atoi(mqtt_port));
-  mqttClient.setBufferSize(512);
   mqttClient.setCallback(mqttCallback);
   while (!mqttClient.connected()) {
     Serial.print("Connecting MQTT...");
@@ -201,7 +200,7 @@ void connectWiFiAndMQTT() {
 }
 
 void publishDiscovery() {
-  char configMsg[512];
+  char configMsg[256];
   // Temperature sensor discovery
   snprintf(configMsg, sizeof(configMsg),
     "{\"name\":\"Bazén Teplota\","
