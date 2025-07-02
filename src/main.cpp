@@ -40,8 +40,8 @@
 #define PASS_SIZE      32
 
 // MQTT topics
-const char* TOPIC_TEMP        = "bazen/teplota";
-const char* TOPIC_INTERVAL    = "bazen/interval/set";
+const char* TOPIC_TEMP        = "pool/temperature";
+const char* TOPIC_INTERVAL    = "pool/interval/set";
 const char* DISCOVERY_TOPIC_TEMP = "homeassistant/sensor/pool_sensor_temperature/config";
 const char* DISCOVERY_TOPIC_VOLT = "homeassistant/sensor/pool_sensor_voltage/config";
 
@@ -205,7 +205,7 @@ void publishDiscovery() {
   char configMsg[512];
   // Temperature sensor discovery
   snprintf(configMsg, sizeof(configMsg),
-    "{\"name\":\"Bazén Teplota\","
+    "{\"name\":\"Pool Temperature\","
     "\"state_topic\":\"%s\","
     "\"unit_of_measurement\":\"°C\","
     "\"value_template\":\"{{ value_json.temperature }}\","
@@ -216,7 +216,7 @@ void publishDiscovery() {
 
   // Voltage sensor discovery
   snprintf(configMsg, sizeof(configMsg),
-    "{\"name\":\"Bazén Napätie\","
+    "{\"name\":\"Pool Voltage\","
     "\"state_topic\":\"%s\","
     "\"unit_of_measurement\":\"V\","
     "\"device_class\":\"voltage\","
