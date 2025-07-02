@@ -11,6 +11,7 @@
   - Adjust sleep interval via MQTT
   - LED blink indication in Config Mode
   - Fallback to Config Mode on WiFi connection failure
+  - Publish current interval with sensor data
 */
 
 #include <ESP8266WiFi.h>
@@ -184,8 +185,8 @@ void connectWiFiAndMQTT() {
   }
   Serial.printf("\nWiFi IP: %s\n", WiFi.localIP().toString().c_str());
 
+  mqttClient.setBufferSize(512);  // adjust buffer for larger payloads
   mqttClient.setServer(mqtt_server, atoi(mqtt_port));
-  mqttClient.setBufferSize(512);
   mqttClient.setCallback(mqttCallback);
   while (!mqttClient.connected()) {
     Serial.print("Connecting MQTT...");
@@ -251,8 +252,9 @@ void sendData() {
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
   float vbat  = readBatteryVoltage();
-  char payload[100];
-  snprintf(payload, sizeof(payload), "{\"temperature\": %.2f, \"voltage\": %.2f}", tempC, vbat);
+  char payload[128];
+  snprintf(payload, sizeof(payload), "{\"temperature\": %.2f, \"voltage\": %.2f, \"interval\": %d}", tempC, vbat, intervalMinutes);
+  Serial.printf("Publishing: %s\n", payload);
   mqttClient.publish(TOPIC_TEMP, payload);
   mqttClient.disconnect();
 }
