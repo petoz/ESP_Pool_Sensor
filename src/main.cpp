@@ -79,7 +79,7 @@ char mqtt_pass[PASS_SIZE]    = "";
 float readBatteryVoltage() {
   uint16_t raw = analogRead(A0);
   float v = raw * (3.3f / 1023.0f);
-  return v * 2.0f;
+  return v * 2.18f;
 }
 
 void setup() {
